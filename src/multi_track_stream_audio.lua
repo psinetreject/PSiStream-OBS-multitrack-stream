@@ -14,219 +14,174 @@
 --  You should have received a copy of the GNU General Public License
 --  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 --
+--
+--  CHANGES FROM THE ORIGINAL
+--    * Logs through script_log so output appears in the Script Log, not stdout.
+--    * Reports the output id and reads the encoder back, to see whether the
+--      multitrack path kept it.
+--    * Holds one encoder reference for the script's lifetime. The original
+--      re-fetched by name on every update, which leaks a reference each time,
+--      and it cannot simply release it because obs_output_set_audio_encoder does
+--      not take its own reference.
+--    * Fixes get_encoder() being called with no argument on the active-output
+--      path, where it always returned nil.
+--    * Makes the settings table local; it was a global.
+--
 
 obs = obslua
 
-g_recording_dev = false
---g_recording_dev = true
+local g_track = 2       -- OBS audio track (1-6) carrying the clean mix
+local g_bitrate = 160
+local g_enabled = true
+local g_encoder = nil   -- held for the script's lifetime; see note above
 
-g_audio_track = nil -- [1-6]
-g_audio_bitrate = nil
-g_enabled = nil
+local ENCODER_NAME = "PSISTREAM_SECOND_AUDIO_V1"
 
-ENCODER_NAME = "STREAM_MULTI_TRACK_AUDIO_ENCODER_V001__%s"
+local function log(fmt, ...)
+    local ok, msg = pcall(string.format, fmt, ...)
+    obs.script_log(obs.LOG_INFO, ok and msg or fmt)
+end
 
-function get_create_encoder(wanted_track)
-    if wanted_track == nil then
-        print("no wanted_track")
-        return nil
+local function warn(fmt, ...)
+    local ok, msg = pcall(string.format, fmt, ...)
+    obs.script_log(obs.LOG_WARNING, ok and msg or fmt)
+end
+
+-- release_encoder drops our reference. Only safe when the encoder is not
+-- currently attached to a live output.
+local function release_encoder()
+    if g_encoder ~= nil then
+        obs.obs_encoder_release(g_encoder)
+        g_encoder = nil
     end
-    local target_name = ENCODER_NAME:format(wanted_track)
-    local encoder = obs.obs_get_encoder_by_name(target_name)
+end
 
-    if encoder ~= nil then
-        print(("got existing plugin encoder for track %s"):format(wanted_track))
-        return encoder
-    end
+local function build_encoder(track)
+    release_encoder()
 
     local audio = obs.obs_get_audio()
     if audio == nil then
-        print("couldn't get obs audio")
+        warn("no OBS audio context; cannot create an encoder")
         return nil
     end
 
-    print(("creating audio encoder on track %d"):format(wanted_track))
-    encoder = obs.obs_audio_encoder_create("ffmpeg_aac", target_name, nil, wanted_track - 1, nil)
-    if encoder == nil then
-        print("failed creating encoder")
-        return
-    end
-
-    print((("created encoder for track %d %s"):format(wanted_track, obs.obs_encoder_get_name(encoder))))
-    obs.obs_encoder_set_audio(encoder, audio)
-    return encoder
-end
-
-function get_encoder(wanted_track)
-    if wanted_track == nil then
+    -- mixer_idx is zero-based: OBS "Track 2" is index 1.
+    local enc = obs.obs_audio_encoder_create("ffmpeg_aac", ENCODER_NAME, nil, track - 1, nil)
+    if enc == nil then
+        warn("failed to create the AAC encoder for track %d", track)
         return nil
     end
 
-    local target_name = ENCODER_NAME:format(wanted_track)
-    local encoder = obs.obs_get_encoder_by_name(target_name)
-    return encoder
-end
-
-function update_encoder_settings(encoder)
-    if encoder == nil then
-        return false
-    end
-
-    local bitrate = g_audio_bitrate or 160
-
-    settings = obs.obs_data_create()
-    obs.obs_data_set_int(settings, "bitrate", bitrate)
-    obs.obs_encoder_update(encoder, settings)
+    local settings = obs.obs_data_create()
+    obs.obs_data_set_int(settings, "bitrate", g_bitrate)
+    obs.obs_encoder_update(enc, settings)
     obs.obs_data_release(settings)
 
-    print("updated encoder settings")
-    return true
+    obs.obs_encoder_set_audio(enc, audio)
+    g_encoder = enc
+    log("created encoder on OBS track %d at %d kbps", track, g_bitrate)
+    return enc
 end
 
-function clear_encoder(output)
-    if output ~= nil then
-        print("clearing encoder")
-        obs.obs_output_set_audio_encoder(output, nil, 1)
-    end
-end
-
-function set_multi_tracks(output)
+local function attach(output)
     if output == nil then
+        warn("no streaming output to attach to")
         return
     end
 
+    local out_id = obs.obs_output_get_id(output) or "?"
+    log("streaming output id = %s", out_id)
+    -- Under Enhanced Broadcasting this is NOT rtmp_output. Seeing which one it
+    -- is tells us whether the multitrack path is in play at all.
+
     if not g_enabled then
-        print("not enabled, clearing")
-        clear_encoder(output)
+        log("disabled; clearing any second track")
+        obs.obs_output_set_audio_encoder(output, nil, 1)
         return
     end
 
     if obs.obs_output_active(output) then
-        local encoder = get_encoder()
-        update_encoder_settings(encoder)
-        obs.script_log(obs.LOG_ERROR, "set_multi_tracks: Can't change settings while output active")
-        return
-    end
-    print("doing the thing")
-
-    if g_audio_track == nil then
-        print("no audio track")
-        clear_encoder(output)
+        warn("output already active; a second track can only be attached before it starts")
         return
     end
 
-    local encoder = get_create_encoder(g_audio_track)
-    if encoder == nil then
-        clear_encoder(output)
+    local enc = build_encoder(g_track)
+    if enc == nil then
+        obs.obs_output_set_audio_encoder(output, nil, 1)
         return
     end
 
-    if not update_encoder_settings(encoder) then
-        print('failed updating encoder')
-        clear_encoder(output)
-        obs.obs_encoder_release(encoder)
-        return
-    end
+    -- Index 1 is the second audio track on the output. Note this does NOT take a
+    -- reference, which is why g_encoder holds ours.
+    obs.obs_output_set_audio_encoder(output, enc, 1)
 
-    print(("setting track %d encoder as VOD track"):format(g_audio_track))
-    obs.obs_output_set_audio_encoder(output, encoder, 1) -- doesn't increase ref count, don't release encoder
+    -- Read it back. If the multitrack path ignores or overwrites index 1, this is
+    -- where it shows, before a single frame is sent.
+    local check = obs.obs_output_get_audio_encoder(output, 1)
+    if check == nil then
+        warn("attached, but index 1 reads back EMPTY: this output rejected the second track")
+    else
+        log("attached: index 1 now holds %s", obs.obs_encoder_get_name(check) or "?")
+    end
 end
 
-function on_event(event)
-    --print(("event %d"):format(event))
+local function on_event(event)
     if event == obs.OBS_FRONTEND_EVENT_STREAMING_STARTING then
-        print("OBS_FRONTEND_EVENT_STREAMING_STARTING")
-
         local output = obs.obs_frontend_get_streaming_output()
-        if output == nil then
-            print("no streaming output")
-            return
-        end
-
-        set_multi_tracks(output)
+        attach(output)
         obs.obs_output_release(output)
-
-        --elseif g_recording_dev and event == obs.OBS_FRONTEND_EVENT_RECORDING_STARTING then
-        --    print("OBS_FRONTEND_EVENT_RECORDING_STARTING")
-        --
-        --    local output = obs.obs_frontend_get_recording_output()
-        --    if output == nil then
-        --        print("no recording output")
-        --        return
-        --    end
-        --
-        --    set_multi_tracks(output)
-        --    obs.obs_output_release(output)
-
     elseif event == obs.OBS_FRONTEND_EVENT_STREAMING_STOPPED then
-        print("OBS_FRONTEND_EVENT_STREAMING_STOPPED")
-
         local output = obs.obs_frontend_get_streaming_output()
-        clear_encoder(output)
-        obs.obs_output_release(output)
-
-        --elseif g_recording_dev and event == obs.OBS_FRONTEND_EVENT_RECORDING_STOPPED then
-        --    print("OBS_FRONTEND_EVENT_RECORDING_STOPPED")
-        --
-        --    local output = obs.obs_frontend_get_recording_output()
-        --    clear_encoder(output)
-        --    obs.obs_output_release(output)
+        if output ~= nil then
+            obs.obs_output_set_audio_encoder(output, nil, 1)
+            obs.obs_output_release(output)
+        end
+        release_encoder()
     end
 end
 
 function script_properties()
     local props = obs.obs_properties_create()
-
     obs.obs_properties_add_bool(props, "enabled", "Enabled")
-    obs.obs_properties_add_int(props, "audio_track", "VOD Audio Track (1-6)", 1, 6, 1)
-    obs.obs_properties_add_int(props, "bitrate", "Audio Bitrate", 60, 320, 1)
-
+    obs.obs_properties_add_int(props, "audio_track", "Clean-mix audio track (1-6)", 1, 6, 1)
+    obs.obs_properties_add_int(props, "bitrate", "Bitrate (kbps)", 60, 320, 1)
     return props
 end
 
 function script_description()
-    return [[Use a different audio track on Twitch for VODs and streams. Version 0.0.2 by RatWithAShotgun.
-
-Note: Needs to be enabled when starting stream for it to work! Sometimes it just doesn't seem to work and the VOD also has the stream audio. Should hopefully be fixed by Twitch soon, still in beta.
-
-Select Track Sources via OBS -> Edit-> Advanced Audio Properties. Changing the VOD Audio Track below will not take effect while the stream is live. Track 1 is used by OBS for the stream so Track 2 for VODs is usually easiest]]
+    return [[<b>PSiStream: second audio track for any service</b><br><br>
+Sends a second audio track alongside your stream, the way Twitch's VOD Track option does,
+but for any service including a named one such as PSiStream. OBS hides that option unless
+the service is called "Twitch"; the restriction is in the settings screen, not in the
+streaming code, so this attaches the track directly.<br><br>
+Pick the track carrying your music-free mix. Track 1 is your main stream audio, so Track 2
+is the usual choice. Set which sources feed it under Edit, then Advanced Audio Properties.<br><br>
+<b>Must be enabled before you start streaming.</b> Changes do not apply to a live stream.<br><br>
+Check the Script Log after going live: it reports the output type and whether the track was
+accepted. Under Enhanced Broadcasting OBS uses a different output, and whether it keeps the
+second track is exactly what this is here to find out.]]
 end
 
 function script_defaults(settings)
     obs.obs_data_set_default_bool(settings, "enabled", true)
-    obs.obs_data_set_default_int(settings, "bitrate", 160)
     obs.obs_data_set_default_int(settings, "audio_track", 2)
+    obs.obs_data_set_default_int(settings, "bitrate", 160)
 end
 
 function script_update(settings)
-    g_audio_track = obs.obs_data_get_int(settings, "audio_track")
-    if not g_audio_track or g_audio_track < 1 or g_audio_track > 6 then
-        g_audio_track = nil
-    end
-    g_audio_bitrate = obs.obs_data_get_int(settings, "bitrate")
     g_enabled = obs.obs_data_get_bool(settings, "enabled")
-
-    print(("multi_track_stream update: track: %d. bitrate: %d. enabled: %s"):format(g_audio_track, g_audio_bitrate, g_enabled))
-
-    --print("sending fake recording started event")
-    --on_event(obs.OBS_FRONTEND_EVENT_RECORDING_STARTING)
-
-    if g_recording_dev then
-        local output = obs.obs_frontend_get_recording_output()
-        set_multi_tracks(output)
-        obs.obs_output_release(output)
+    g_bitrate = obs.obs_data_get_int(settings, "bitrate")
+    local track = obs.obs_data_get_int(settings, "audio_track")
+    if track and track >= 1 and track <= 6 then
+        g_track = track
     end
-
-    local output = obs.obs_frontend_get_streaming_output()
-    set_multi_tracks(output)
-    obs.obs_output_release(output)
+    log("settings: enabled=%s track=%d bitrate=%d", tostring(g_enabled), g_track, g_bitrate)
 end
 
 function script_load(settings)
-    --print("\n\nscript_load\n")
     obs.obs_frontend_add_event_callback(on_event)
 end
 
 function script_unload()
-    --print("\n\nscript_unload\n")
+    release_encoder()
 end
