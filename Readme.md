@@ -1,87 +1,87 @@
-##  Plugin Discontinued
-## OBS 26.1 lets you set a VOD track by itself now https://github.com/obsproject/obs-studio/releases
+# Second audio track for any streaming service
 
-#### Multi Track Stream Audio
+An OBS script that sends a second audio track alongside your stream, the way Twitch's
+"VOD Track" option does, but for any service.
 
-Allows having two separate audio tracks on Twitch, one for live viewers and a completely separate one for Twitch VODs.
-This uses the multi track audio support Twitch and OBS added for the new Twitch music tool but which can be used with any audio tracks in OBS.
+This is a fork of [OBS-multitrack-stream](https://github.com/ratwithacompiler/OBS-multitrack-stream)
+by RatWithAShotgun, updated for current OBS and generalised past Twitch.
 
-#### Notes: 
+## Why it exists
 
-* **In order to exclude certain parts like music they need to be their own separate source in OBS**. If all audio (game/browser/music) is captured just via a single Desktop Audio Capture or Input Capture it's not possible to exclude a part of it in OBS. 
+OBS has a built-in VOD track, but the checkbox only appears when the selected service is
+literally named "Twitch", or when the service is Custom and a hidden user-config flag
+(`EnableCustomServerVodTrack`) is set. That gate lives in the settings screen
+(`UpdateVodTrackSetting` in `frontend/settings/OBSBasicSettings_Stream.cpp`), not in the
+streaming code: `obs_output_set_audio_encoder` has no idea which service you are using.
 
-* The plugin must be set up and enabled before going live, enabling it while already streaming is too late. 
+So any service that is listed in OBS by name, rather than configured as Custom, loses the
+option. This script attaches the encoder directly and gives it back.
 
-* OBS will have this as a default feature as of the next OBS release.
+The practical use is a music-free mix. Put your music on its own source, exclude it from
+one OBS track, and send that track as the second one so a destination that mutes copyrighted
+audio has something clean to fall back on.
 
-Creating separate audio sources is left to the user and can be done in many different ways like capturing applications by themselves, using VoiceMeeter, Virtual Audio Cables or using some mixer software like GoXLR has and what's easiest will depend on the specific audio setup used.
+## Status
 
-![OBS Track Mixer](https://i.imgur.com/MKeLFH1.png)
+The plain RTMP path is straightforward: the script attaches an AAC encoder at output audio
+index 1 before the stream starts.
 
-Open the OBS mixer via `OBS -> Edit -> Advanced Audio Properties`. In this example live viewers would hear Track 1 with all sources including `Music` while the VOD would have Track 2 which has everything except the audio from the `Music` source.
-Uncheck `Active Sources Only` in order to not miss sources from other scenes.
+Enhanced Broadcasting is the open question. In that mode OBS does not use the ordinary RTMP
+output, it uses a multitrack video output that builds its own audio configuration, and
+whether an encoder attached here survives that path is not yet confirmed. The script logs
+the output id and reads index 1 back after attaching, so you can see the answer in the
+Script Log rather than guess. If you run it that way, the log lines are the thing to report.
 
-#### Installation:
+If OBS already offers you the VOD Track checkbox, use that instead and leave this script
+disabled. Running both means the script overwrites what OBS set up, which is not a
+combination this has been built for.
 
-* Download [multi_track_stream_audio.lua (right click, save as)](https://raw.githubusercontent.com/ratwithacompiler/OBS-multitrack-stream/master/src/multi_track_stream_audio.lua) and save it somewhere the file won't be moved
-    * If the file is moved or renamed after adding it to OBS it will stop working until re-added.
-* Go to `OBS -> Tools -> Scripts`
-* Click `+` Button bottom left
-* Select the downloaded file `multi_track_stream_audio.lua` and add it
-* The script settings should be visible now
+## Installation
 
-Select whatever OBS Audio Track you want Twitch to use for VODs. Track 1 is what OBS uses for stream by default so using 2 for VODs usually makes the most sense. Audio Bitrate 160 is the default OBS uses for streams and should be good. 
+1. Download [`multi_track_stream_audio.lua`](https://raw.githubusercontent.com/psinetreject/PSiStream-OBS-multitrack-stream/master/src/multi_track_stream_audio.lua)
+   (right click, save as) and put it somewhere it will stay. If the file is moved or renamed
+   after you add it, OBS drops it and you have to add it again.
+2. In OBS, go to `Tools` then `Scripts`.
+3. Click the `+` button at the bottom left and select the file.
+4. The script settings appear on the right.
 
-Select which sources are audible on which tracks in OBS via the mixer in `OBS -> Edit -> Advanced Audio Properties` or right clicking any audio source.
+Requires an OBS build with Lua scripting. Written against OBS 32.2, using only the obslua
+frontend and encoder calls, which have been stable for many releases.
 
-![Script Settings](https://i.imgur.com/B6WpmbT.png)
+## Settings
 
+| Setting | Default | Notes |
+|---|---|---|
+| Enabled | on | Turn it off to leave the second track alone entirely. |
+| Clean-mix audio track (1-6) | 2 | The OBS track carrying the mix you want sent as the second track. Track 1 is your main stream audio, so 2 is the usual choice. |
+| Bitrate (kbps) | 160 | 60 to 320. 160 matches the OBS default for streams. |
 
+**It has to be enabled before you go live.** The track is attached as the stream starts, and
+nothing you change during a live stream takes effect until the next one.
 
+## Choosing what goes on the track
 
-##### Example Windows Single PC setup:
+Anything you want to exclude has to be its own source in OBS. If game, browser and music
+audio all arrive through a single Desktop Audio Capture, OBS has nothing to separate.
 
-If you're on a single PC setup on Windows the easiest way to separate audio is probably using Voicemeeter. 
+Open `Edit` then `Advanced Audio Properties` and untick the sources you want left off your
+chosen track. Untick "Active Sources Only" so sources from other scenes are not hidden from
+the list.
 
-* play whatever music or audio you don't want on the VOD only to the Voicemeeter virtual audio device not to your default desktop audio device
-  * select that virtual sound device for the application either via its settings if it has that or otherwise Windows 10 also now just lets you select separate audio devices for specific applications via "App volume and device properties" settings
-* set Voicemeeter itself to play the music/audio going to that device to your headphones and back to the virtual device output
-* add a audio input source in OBS that uses that virtual Voicemeeter device as input, call it Music
-* in the OBS audio mixer just uncheck that Music source for track 2
-* then in the multi track plugin just be sure that track 2 is selected for VOD audio (`OBS -> Tools -> Scripts`)
-* now Track 1 with music is what live viewers hear while Track 2 without music is what gets put on the VOD and you still hear the music via voicemeeter
+The original project's README has worked examples for splitting audio with Voicemeeter, a
+GoXLR, or a two PC setup with NDI, and they all still apply:
+[upstream Readme](https://github.com/ratwithacompiler/OBS-multitrack-stream#readme).
 
-Just one example, there are a million ways that can be done on Windows.
+## Checking that it worked
 
-##### Example setup for a 2 PC setup with GoXLR and Spotify both on the gaming PC:
+Open `Tools` then `Scripts` and look at the Script Log. Going live should give you the
+output id, then either the name of the encoder sitting at index 1, or a warning that index 1
+read back empty, which means that output refused the second track.
 
-This is just one of a million ways a setup for this could look like. This uses GoXLR connected to the gaming PC to play the music to the headphones but not to stream and then sends the music audio via NDI to the streaming PC so it's available as a separate source that goes to live viewers but not to VOD.
+## Credit and license
 
-Gaming PC audio:
+Original work copyright (C) 2020 by RatWithAShotgun,
+[OBS-multitrack-stream](https://github.com/ratwithacompiler/OBS-multitrack-stream).
+Modified in 2026 by PSiStream LLC. The changes are listed at the top of the script.
 
-* use the Music input in GoXLR
-* set GoXLR Music as audio device for Spotify (via Windows per App audio settings)
-* in GoXLR routing set Music to go to your headphones but not to stream
-
-Variant 1: Without OBS on Gaming PC:
-
-* you can use NDI Scan Converter which is a little desktop tray icon tool NDI makes it easy to send things like mics/webcams/screens and can be used to just only send the music as a separate source to the streaming PC
-* it's part of their NDI tools package available for free here https://ndi.tv/tools/
-* you don't need to use NDI for anything else like video and NDI Scan Converter takes only around 10MB memory and basically no CPU when just sending audio
-* in the Scan Converter tray icon menu set the GoXLR Music device as Webcam Audio Source and make sure Webcam video is None
-
-Variant 2: With OBS on Gaming PC:
-
-* add a Audio Capture Source
-* select the Music audio device as input
-* mute it
-* for that new OBS source go to Filters
-* add a NDI Output filter, name it music or whatever you'll recognize 
-
-Streaming PC OBS:
-
-* install OBS NDI plugin https://github.com/Palakis/obs-ndi/releases
-* add a NDI source called Music and select the audio only NDI source from the Gaming PC as input
-* in the OBS mixer just uncheck that Music source for track 2
-* then in the multi track plugin just be sure that track 2 is selected for VOD audio (`OBS -> Tools -> Scripts`)
-* now Track 1 with music is what live viewers hear while Track 2 without music is what gets put on the VOD
+GPL-2.0-or-later, the same license as the original. See [LICENSE](LICENSE).
