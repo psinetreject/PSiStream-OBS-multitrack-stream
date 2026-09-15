@@ -38,7 +38,7 @@ combination this has been built for.
 
 ## Installation
 
-1. Download [`multi_track_stream_audio.lua`](https://raw.githubusercontent.com/psinetreject/PSiStream-OBS-multitrack-stream/master/src/multi_track_stream_audio.lua)
+1. Download [`psistream-second-audio-track.lua`](https://raw.githubusercontent.com/psinetreject/PSiStream-OBS-multitrack-stream/master/src/psistream-second-audio-track.lua)
    (right click, save as) and put it somewhere it will stay. If the file is moved or renamed
    after you add it, OBS drops it and you have to add it again.
 2. In OBS, go to `Tools` then `Scripts`.
