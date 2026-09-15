@@ -1,5 +1,11 @@
 --
+--  Second audio track for any streaming service.
+--
 --  Copyright (C) 2020 by RatWithAShotgun
+--  Modified in 2026 by PSiStream LLC. Changes are listed below.
+--
+--  Derived from OBS-multitrack-stream:
+--  https://github.com/ratwithacompiler/OBS-multitrack-stream
 --
 --  This program is free software; you can redistribute it and/or
 --  modify it under the terms of the GNU General Public License
@@ -15,7 +21,7 @@
 --  along with this program.  If not, see <http://www.gnu.org/licenses/>.
 --
 --
---  CHANGES FROM THE ORIGINAL
+--  CHANGES FROM THE ORIGINAL (2026, PSiStream LLC)
 --    * Logs through script_log so output appears in the Script Log, not stdout.
 --    * Reports the output id and reads the encoder back, to see whether the
 --      multitrack path kept it.
